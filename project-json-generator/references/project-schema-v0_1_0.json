@@ -1,0 +1,1127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "project-schema.json",
+  "title": "Monorepo Project Configuration Schema",
+  "description": "Defines global technology decisions for all projects, services, and libraries in the monorepo.",
+  "type": "object",
+  "required": ["schema-version", "metadata", "global", "projects"],
+  "additionalProperties": false,
+
+  "x-agent-guide": {
+    "description": "Quick-start guide for AI agents encountering this schema for the first time.",
+    "what-is-this": "project.json is the single source of truth for all technology decisions in a project or monorepo. It provides guardrails that ensure consistency across agents, sessions, and providers during development, testing, and deployment.",
+    "how-to-read": [
+      "1. Read this x-agent-guide section first.",
+      "2. Read x-merge-semantics to understand how global, project, and environment configs compose.",
+      "3. Read x-cross-reference-validation for constraints that JSON Schema cannot enforce — your tooling MUST enforce these separately.",
+      "4. Read x-compatibility to understand which schema versions you can consume."
+    ],
+    "how-config-resolves": "For any project, the resolved configuration is: global defaults → deep-merged with project.overrides → deep-merged with project.environment-overrides[env]. If a project omits technology-stack, it inherits global.default-technology-stack. If it provides a full technology-stack, the project-level stack is used as-is. If it provides technology-stack-overrides, the overrides are deep-merged onto the inherited global default (with frameworks using keyed-array merge on name).",
+    "key-concepts": {
+      "depends-vs-consumes": "depends[] = hard build/startup dependencies (must be a DAG). consumes[] = runtime communication targets (may degrade gracefully). Use depends for build order and deployment sequencing. Use consumes for integration tests and service mesh config.",
+      "bang-prefix": "In override scalar arrays, prefixing an item with '!' removes it from the merged result (e.g. '!typecheck' removes the global 'typecheck' entry).",
+      "lifecycle": "Every project has a lifecycle field (active, deprecated, experimental, migrating, archived). Agents SHOULD warn before adding dependencies on non-active projects and SHOULD skip deprecated/archived projects in new scaffolding.",
+      "technology-stack-resolution": "A project's resolved technology stack is determined by: (1) project.technology-stack if present (full replacement), else (2) global.default-technology-stack deep-merged with project.technology-stack-overrides if present, else (3) global.default-technology-stack alone. At least one of (1) or (3) MUST exist."
+    },
+    "common-workflows": {
+      "scaffold-new-project": "Read global.default-technology-stack and global defaults → generate project entry with inherited values → add project-specific overrides only where needed.",
+      "validate-config": "Run JSON Schema validation first → then run the cross-reference validator for rules in x-cross-reference-validation.",
+      "resolve-config-for-env": "Load global → deep-merge project.overrides → deep-merge project.environment-overrides[target-env] → result is the fully resolved config for that project in that environment.",
+      "impact-analysis": "Traverse depends[] and consumes[] graphs to find all upstream/downstream projects affected by a change."
+    }
+  },
+
+  "x-compatibility": {
+    "description": "Schema evolution and compatibility metadata. Agents and validators should check this before processing a project.json file.",
+    "current-version": "0.1.0",
+    "minimum-reader-version": "0.1.0",
+    "compatible-versions": ["0.1.0"]
+  },
+
+  "x-merge-semantics": {
+    "description": "Defines how project-level and environment-level overrides compose with global configuration.",
+    "merge-order": "global → project overrides → environment overrides. Each layer deep-merges into the result of the previous layer.",
+    "reference-implementation": "See /lib/merge.ts (or /lib/merge.py). All consumers MUST use or replicate the canonical merge implementation to ensure consistent resolved configs across agents, sessions, and providers.",
+    "rules": {
+      "objects": {
+        "strategy": "deep-merge",
+        "description": "Project keys win on conflict. Global keys not mentioned in the override are preserved."
+      },
+      "keyed-arrays": {
+        "strategy": "merge-by-identity",
+        "description": "Array items are matched by the field specified in x-merge-key. Matched items are overridden by the project entry. Unmatched global items are preserved. New project items are appended."
+      },
+      "scalar-arrays": {
+        "strategy": "union-with-removal",
+        "description": "Project items are unioned with global items. Items prefixed with '!' are removed from the merged result (e.g. '!typecheck' removes 'typecheck' from the global set). The '!' prefix is always syntactically valid in scalar arrays but is only semantically meaningful during merge resolution."
+      }
+    },
+    "edge-cases": {
+      "missing-global-section": "If a project override references a section (e.g. 'api') that has no global counterpart, the project override is used as-is with no merge. Agents should treat it as a standalone value for that project.",
+      "unknown-environment-key": "If an environment-overrides key does not match any entry in global.environments, validators MUST emit an error. This is not enforceable in JSON Schema and requires out-of-band validation.",
+      "technology-stack-vs-overrides-conflict": "If a project defines both technology-stack and technology-stack-overrides, validators MUST emit an error. Only one may be present."
+    }
+  },
+
+  "x-cross-reference-validation": {
+    "description": "The following cross-reference constraints cannot be expressed in JSON Schema and MUST be enforced by the reference validator.",
+    "rules": [
+      {
+        "id": "dep-name-exists",
+        "description": "Every 'name' in a project's depends[] and consumes[] arrays MUST match the 'name' field of another project in the top-level projects[] array.",
+        "path": "projects[*].depends[*].name, projects[*].consumes[*].name",
+        "severity": "error"
+      },
+      {
+        "id": "env-override-key-exists",
+        "description": "Every key in a project's environment-overrides object MUST match an entry in global.environments.",
+        "path": "projects[*].environment-overrides",
+        "severity": "error"
+      },
+      {
+        "id": "no-circular-depends",
+        "description": "The dependency graph formed by depends[] MUST be a DAG. Circular hard dependencies are invalid.",
+        "path": "projects[*].depends[*].name",
+        "severity": "error"
+      },
+      {
+        "id": "unique-project-names",
+        "description": "Every project name in projects[] MUST be unique.",
+        "path": "projects[*].name",
+        "severity": "error"
+      },
+      {
+        "id": "unique-project-ports",
+        "description": "Every project port in projects[] MUST be unique within each environment after config resolution. Duplicate ports within the same resolved environment cause hard failures in local dev, docker-compose, and service mesh configurations. Validators MUST resolve environment-overrides before checking port uniqueness.",
+        "path": "projects[*].port, projects[*].environment-overrides[*]",
+        "severity": "error"
+      },
+      {
+        "id": "depends-on-non-active-lifecycle",
+        "description": "If a project's depends[] or consumes[] references a project with lifecycle 'deprecated' or 'archived', validators MUST emit a warning. Agents SHOULD NOT add new dependencies on non-active projects without explicit instruction.",
+        "path": "projects[*].depends[*].name, projects[*].consumes[*].name",
+        "severity": "warning"
+      },
+      {
+        "id": "technology-stack-resolved",
+        "description": "Every project MUST have a resolved technology stack. Either the project defines its own technology-stack, or global.default-technology-stack MUST be present. If neither exists for a given project, validators MUST emit an error.",
+        "path": "projects[*].technology-stack, global.default-technology-stack",
+        "severity": "error"
+      },
+      {
+        "id": "technology-stack-mutual-exclusion",
+        "description": "A project MUST NOT define both technology-stack and technology-stack-overrides. If both are present, validators MUST emit an error.",
+        "path": "projects[*].technology-stack, projects[*].technology-stack-overrides",
+        "severity": "error"
+      },
+      {
+        "id": "technology-stack-overrides-requires-global-default",
+        "description": "If a project defines technology-stack-overrides, global.default-technology-stack MUST be present (there is nothing to override otherwise).",
+        "path": "projects[*].technology-stack-overrides, global.default-technology-stack",
+        "severity": "error"
+      },
+      {
+        "id": "unique-backing-service-ids",
+        "description": "Within each scope (global.infrastructure.backing-services and each project's infrastructure.backing-services), every backing service 'id' MUST be unique.",
+        "path": "global.infrastructure.backing-services[*].id, projects[*].infrastructure.backing-services[*].id",
+        "severity": "error"
+      },
+      {
+        "id": "workspace-dependency-version-consistency",
+        "description": "If a project's technology-stack or technology-stack-overrides references a tool (by name) that also appears in global.workspace-dependencies, the version ranges SHOULD be compatible. Validators SHOULD emit a warning on likely conflicts.",
+        "path": "global.workspace-dependencies[*].name, projects[*].technology-stack",
+        "severity": "warning"
+      }
+    ]
+  },
+
+  "properties": {
+    "schema-version": {
+      "type": "string",
+      "description": "Version of this schema specification (semver)",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "const": "0.1.0"
+    },
+
+    "metadata": {
+      "type": "object",
+      "required": ["name", "type", "description"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "type": {
+          "type": "string",
+          "enum": ["standalone", "monorepo", "polyrepo"]
+        },
+        "description": { "type": "string" }
+      }
+    },
+
+    "global": {
+      "type": "object",
+      "required": [
+        "environments",
+        "version-control",
+        "ci-cd",
+        "testing",
+        "code-quality",
+        "security",
+        "observability",
+        "service-communication",
+        "release",
+        "dependencies",
+        "deployment"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "environments": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/scalarItem" },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "default-technology-stack": {
+          "$ref": "#/$defs/technologyStack",
+          "description": "Default technology stack inherited by all projects that do not define their own technology-stack. Projects may fully replace this by providing technology-stack, or partially override it via technology-stack-overrides (deep-merge with keyed-array merge on frameworks[].name). Agents should use this as the starting point when scaffolding new projects."
+        },
+        "workspace-dependencies": {
+          "type": "array",
+          "description": "Shared workspace-level package constraints that apply across all projects. Use this to declare packages that the entire monorepo must align on (e.g. a shared TypeScript version, a shared ESLint config, a common internal SDK). Agents should treat these as authoritative when resolving dependency versions or scaffolding new projects. Individual projects may pin stricter versions but should not contradict these constraints.",
+          "items": { "$ref": "#/$defs/workspaceDependencyEntry" },
+          "minItems": 1
+        },
+        "version-control": {
+          "type": "object",
+          "required": ["branching-strategy"],
+          "additionalProperties": false,
+          "properties": {
+            "branching-strategy": {
+              "type": "string",
+              "enum": [
+                "trunk-based",
+                "gitflow",
+                "github-flow",
+                "gitlab-flow",
+                "release-flow"
+              ]
+            }
+          }
+        },
+        "ci-cd": {
+          "allOf": [
+            { "$ref": "#/$defs/ciCd" },
+            { "required": ["platform", "required-checks", "branch-protection"] }
+          ]
+        },
+        "testing": {
+          "allOf": [
+            { "$ref": "#/$defs/testing" },
+            { "required": ["strategy", "coverage"] }
+          ]
+        },
+        "code-quality": {
+          "allOf": [
+            { "$ref": "#/$defs/codeQuality" },
+            { "required": ["requirements", "pre-commit"] }
+          ]
+        },
+        "security": {
+          "allOf": [
+            { "$ref": "#/$defs/security" },
+            {
+              "required": [
+                "dependency-scanning",
+                "secret-detection",
+                "sast",
+                "container-scanning",
+                "policy"
+              ]
+            }
+          ]
+        },
+        "observability": {
+          "allOf": [
+            { "$ref": "#/$defs/observability" },
+            { "required": ["logging", "tracing", "metrics"] }
+          ]
+        },
+        "service-communication": {
+          "allOf": [
+            { "$ref": "#/$defs/serviceCommunication" },
+            {
+              "anyOf": [
+                { "required": ["internal-sync"] },
+                { "required": ["internal-async-protocol"] },
+                { "required": ["internal-async-transport"] }
+              ]
+            }
+          ]
+        },
+        "release": {
+          "allOf": [
+            { "$ref": "#/$defs/release" },
+            { "required": ["versioning", "changelog", "tagging"] }
+          ]
+        },
+        "dependencies": {
+          "allOf": [
+            { "$ref": "#/$defs/dependencies" },
+            {
+              "required": [
+                "update-strategy",
+                "lock-files",
+                "allowed-licenses",
+                "version-pinning"
+              ]
+            }
+          ]
+        },
+        "deployment": {
+          "allOf": [{ "$ref": "#/$defs/deployment" }, { "required": ["tools"] }]
+        },
+        "api": {
+          "allOf": [
+            { "$ref": "#/$defs/api" },
+            {
+              "required": [
+                "style",
+                "versioning",
+                "documentation",
+                "authentication",
+                "rate-limiting"
+              ]
+            }
+          ]
+        },
+        "infrastructure": {
+          "$ref": "#/$defs/infrastructure",
+          "description": "Global defaults for backing infrastructure. Projects inherit these and may override."
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensionsBlock",
+          "description": "Open-ended key/value pairs for custom configuration, tooling integrations, feature flags, or any team-specific settings that do not fit the schema's structured fields. Agents should read but not modify these unless explicitly instructed."
+        },
+        "agent-hints": {
+          "type": "array",
+          "description": "Organisation-wide natural language guidance for AI agents. Each item is a discrete directive or contextual note that agents should factor into their decisions across all projects (e.g. 'all services must be stateless', 'prefer composition over inheritance', 'we are migrating from AWS to GCP').",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      }
+    },
+
+    "projects": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/project" }
+    }
+  },
+
+  "$defs": {
+    "scalarItem": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^!?.+$",
+      "description": "A plain string value for use in scalar arrays. May optionally be prefixed with '!' to indicate removal from the merged set during override resolution. The '!' prefix is always syntactically valid but only semantically meaningful during merge. See x-merge-semantics."
+    },
+
+    "versionRange": {
+      "type": "string",
+      "pattern": "^(\\*|\\d+(\\.\\d+)?\\.x|[~^]\\d+\\.\\d+\\.\\d+|>=\\d+\\.\\d+\\.\\d+(\\s*<\\d+\\.\\d+\\.\\d+)?)$",
+      "description": "Version range. Accepts: wildcard ('*'), minor-range shorthand ('3.14.x', '22.x'), caret ('^1.2.3' = compatible with), tilde ('~1.2.3' = patch-level changes), lower-bound ('>=1.0.0'), or explicit range ('>=3.14.0 <4.0.0')."
+    },
+
+    "versionExact": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Exact version, e.g. '28.5.1' or '0.1.0'"
+    },
+
+    "namedToolRange": {
+      "type": "object",
+      "required": ["name", "version"],
+      "additionalProperties": false,
+      "x-merge-key": "name",
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "$ref": "#/$defs/versionRange" }
+      }
+    },
+
+    "namedToolExact": {
+      "type": "object",
+      "required": ["name", "version"],
+      "additionalProperties": false,
+      "x-merge-key": "name",
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "$ref": "#/$defs/versionExact" }
+      }
+    },
+
+    "workspaceDependencyEntry": {
+      "type": "object",
+      "required": ["name", "version"],
+      "additionalProperties": false,
+      "x-merge-key": "name",
+      "description": "A shared workspace-level package constraint. Represents a dependency that all projects in the monorepo should align on. Agents should prefer these versions when scaffolding new projects or updating dependencies.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Package name as it appears in the ecosystem's package registry (e.g. 'typescript', '@eslint/config', 'prettier')."
+        },
+        "version": {
+          "$ref": "#/$defs/versionRange",
+          "description": "Version constraint for this shared package."
+        },
+        "purpose": {
+          "type": "string",
+          "description": "Why this package is pinned at the workspace level (e.g. 'shared compiler version', 'org-wide lint config', 'internal SDK')."
+        },
+        "scope": {
+          "type": "string",
+          "enum": ["runtime", "dev", "peer", "build"],
+          "description": "Dependency scope: 'runtime' for production deps, 'dev' for development/build tooling, 'peer' for peer dependency contracts, 'build' for build-only tools."
+        }
+      }
+    },
+
+    "ownerEntry": {
+      "type": "object",
+      "required": ["team"],
+      "additionalProperties": false,
+      "description": "Structured ownership information for a project. Agents use this for routing decisions, PR assignment, escalation, and impact notification.",
+      "properties": {
+        "team": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "description": "Team slug that owns this project. Must be a lowercase kebab-case identifier (e.g. 'backend-platform', 'payments', 'infra-sre'). Agents should use this as the canonical team identifier for CODEOWNERS generation, PR routing, and notification targeting."
+        },
+        "contact": {
+          "type": "string",
+          "description": "Primary contact for this project — an email address, Slack handle, or distribution list (e.g. 'backend-platform@company.com', '@backend-platform')."
+        },
+        "escalation-channel": {
+          "type": "string",
+          "description": "Escalation channel for urgent issues (e.g. '#backend-platform-oncall', 'pagerduty:backend-platform')."
+        }
+      }
+    },
+
+    "coverageEntry": {
+      "type": "object",
+      "required": ["type", "target"],
+      "additionalProperties": false,
+      "x-merge-key": "type",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "unit",
+            "integration",
+            "e2e",
+            "contract",
+            "performance",
+            "security",
+            "smoke"
+          ]
+        },
+        "target": { "type": "integer", "minimum": 0, "maximum": 100 }
+      }
+    },
+
+    "ciPlatformEnum": {
+      "type": "string",
+      "enum": [
+        "github-actions",
+        "gitlab-ci",
+        "circleci",
+        "jenkins",
+        "azure-devops",
+        "buildkite",
+        "bitbucket-pipelines",
+        "teamcity",
+        "drone",
+        "travis-ci"
+      ]
+    },
+
+    "branchProtection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "required-reviews": { "type": "integer", "minimum": 1 },
+        "require-passing-checks": { "type": "boolean" },
+        "no-force-push": { "type": "boolean" }
+      }
+    },
+
+    "ciCd": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "CI/CD configuration. At global level, required fields are enforced via allOf at the call site. At override level, all fields are optional.",
+      "properties": {
+        "platform": { "$ref": "#/$defs/ciPlatformEnum" },
+        "required-checks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/scalarItem" },
+          "uniqueItems": true
+        },
+        "branch-protection": { "$ref": "#/$defs/branchProtection" }
+      }
+    },
+
+    "testStrategyEnum": {
+      "type": "string",
+      "enum": ["tdd", "bdd", "atdd"]
+    },
+
+    "testing": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Testing configuration. At global level, required fields are enforced via allOf at the call site. At override level, all fields are optional.",
+      "properties": {
+        "strategy": { "$ref": "#/$defs/testStrategyEnum" },
+        "runner": { "type": "string", "minLength": 1 },
+        "coverage": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/coverageEntry" }
+        }
+      }
+    },
+
+    "codeQuality": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Code quality configuration. At global level, required fields are enforced via allOf at the call site. At override level, all fields are optional.",
+      "properties": {
+        "requirements": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^!?(linter|formatter|typechecker)$"
+          },
+          "uniqueItems": true
+        },
+        "pre-commit": { "type": "boolean" },
+        "linter": { "type": "string", "minLength": 1 },
+        "formatter": { "type": "string", "minLength": 1 },
+        "typechecker": { "type": "string", "minLength": 1 }
+      }
+    },
+
+    "securityPolicyBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "block-on-critical-cve": { "type": "boolean" },
+        "audit-on-high-cve": { "type": "boolean" }
+      }
+    },
+
+    "securityToolEntry": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "description": "A structured security tool reference. Gives agents enough context to generate CI pipeline steps, configuration files, and integration code.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Tool identifier, e.g. 'semgrep', 'snyk', 'trivy', 'gitleaks'."
+        },
+        "version": {
+          "$ref": "#/$defs/versionRange",
+          "description": "Version range for the tool. Optional for SaaS-hosted tools."
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["cli", "saas", "plugin"],
+          "description": "How the tool is invoked: 'cli' for local/CI binary, 'saas' for cloud-hosted scan, 'plugin' for IDE/CI platform plugin."
+        },
+        "config-path": {
+          "type": "string",
+          "description": "Repo-relative path to the tool's configuration file, e.g. '.semgrep.yml' or '.snyk'."
+        }
+      }
+    },
+
+    "security": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Security configuration. At global level, required fields are enforced via allOf at the call site. At override level, all fields are optional and deep-merge with global.",
+      "properties": {
+        "dependency-scanning": { "$ref": "#/$defs/securityToolEntry" },
+        "secret-detection": { "$ref": "#/$defs/securityToolEntry" },
+        "sast": { "$ref": "#/$defs/securityToolEntry" },
+        "container-scanning": { "$ref": "#/$defs/securityToolEntry" },
+        "policy": { "$ref": "#/$defs/securityPolicyBase" }
+      }
+    },
+
+    "logging": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "format": {
+          "type": "string",
+          "enum": ["structured-json", "logfmt", "plain-text"]
+        },
+        "levels": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^!?(trace|debug|info|warn|error|fatal)$"
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+
+    "tracing": {
+      "type": "object",
+      "description": "Structured tracing configuration. Gives agents enough context for instrumentation scaffolding.",
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Tracing backend, e.g. 'jaeger', 'zipkin', 'datadog', 'new-relic', 'grafana-tempo'."
+        },
+        "protocol": {
+          "type": "string",
+          "enum": ["otlp-grpc", "otlp-http", "zipkin", "jaeger-thrift"],
+          "description": "Wire protocol for exporting spans."
+        },
+        "sampling-strategy": {
+          "type": "string",
+          "enum": [
+            "always-on",
+            "probabilistic",
+            "rate-limited",
+            "parent-based"
+          ],
+          "description": "Sampling strategy for trace collection."
+        },
+        "propagation": {
+          "type": "string",
+          "enum": ["w3c-tracecontext", "b3", "b3-multi", "jaeger", "xray"],
+          "description": "Context propagation format for distributed traces."
+        }
+      }
+    },
+
+    "metrics": {
+      "type": "object",
+      "description": "Structured metrics configuration. Gives agents enough context for instrumentation scaffolding.",
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Metrics backend, e.g. 'prometheus', 'datadog', 'cloudwatch', 'new-relic', 'grafana-mimir'."
+        },
+        "protocol": {
+          "type": "string",
+          "enum": [
+            "otlp-grpc",
+            "otlp-http",
+            "statsd",
+            "prometheus-scrape",
+            "push-gateway"
+          ],
+          "description": "How metrics are exported or collected."
+        },
+        "default-buckets": {
+          "type": "array",
+          "items": { "type": "number" },
+          "description": "Default histogram bucket boundaries in milliseconds for latency metrics."
+        }
+      }
+    },
+
+    "observability": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Observability configuration. At global level, required fields are enforced via allOf at the call site. At override level, all fields are optional.",
+      "properties": {
+        "logging": { "$ref": "#/$defs/logging" },
+        "tracing": { "$ref": "#/$defs/tracing" },
+        "metrics": { "$ref": "#/$defs/metrics" }
+      }
+    },
+
+    "serviceCommunicationSyncEnum": {
+      "type": "string",
+      "enum": ["http-rest", "grpc", "graphql"]
+    },
+
+    "serviceCommunicationAsyncProtocolEnum": {
+      "type": "string",
+      "enum": ["event-driven", "message-queue"]
+    },
+
+    "asyncTransport": {
+      "type": "object",
+      "description": "Detailed async communication configuration. Gives agents enough context to generate consumer/producer boilerplate, infrastructure-as-code, and integration tests.",
+      "required": ["protocol", "broker"],
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "$ref": "#/$defs/serviceCommunicationAsyncProtocolEnum",
+          "description": "'event-driven' for pub/sub fan-out, 'message-queue' for point-to-point work queues."
+        },
+        "broker": {
+          "type": "string",
+          "enum": [
+            "kafka",
+            "rabbitmq",
+            "sqs",
+            "sns-sqs",
+            "nats",
+            "redis-streams",
+            "pulsar",
+            "azure-service-bus",
+            "google-pubsub"
+          ],
+          "description": "The message broker or managed service backing async communication."
+        },
+        "serialization": {
+          "type": "string",
+          "enum": ["json", "avro", "protobuf", "msgpack"],
+          "description": "Default wire format for message payloads."
+        },
+        "schema-registry": {
+          "type": "string",
+          "description": "URL or identifier of the schema registry (if applicable), e.g. 'confluent-schema-registry' or a URL."
+        }
+      }
+    },
+
+    "serviceCommunication": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Service communication configuration. internal-async-protocol provides a simple enum label for the async pattern. internal-async-transport provides full structured detail including broker, serialization, and schema registry. Use one or both — if both are present, internal-async-transport takes precedence for code generation and internal-async-protocol is treated as a summary label.",
+      "properties": {
+        "internal-sync": {
+          "description": "Protocol for synchronous request/response communication between services.",
+          "$ref": "#/$defs/serviceCommunicationSyncEnum"
+        },
+        "internal-async-protocol": {
+          "description": "Simple label for the async communication pattern. Use this when the broker and serialization details are not needed or are configured elsewhere.",
+          "$ref": "#/$defs/serviceCommunicationAsyncProtocolEnum"
+        },
+        "internal-async-transport": {
+          "description": "Full structured async communication configuration including broker, serialization, and schema registry. When present alongside internal-async-protocol, this takes precedence for code generation.",
+          "$ref": "#/$defs/asyncTransport"
+        }
+      }
+    },
+
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "versioning": {
+          "type": "string",
+          "enum": ["semver", "calver"]
+        },
+        "changelog": {
+          "type": "string",
+          "enum": ["conventional-commits", "keep-a-changelog", "manual"]
+        },
+        "tagging": {
+          "type": "string",
+          "enum": ["per-service", "monorepo"]
+        }
+      }
+    },
+
+    "versionPinning": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "strategy": {
+          "type": "string",
+          "enum": ["minor-range", "patch-range", "exact"]
+        },
+        "exact-for": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        }
+      }
+    },
+
+    "dependencies": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Dependency management configuration. At global level, required fields are enforced via allOf at the call site. At override level, all fields are optional.",
+      "properties": {
+        "update-strategy": {
+          "type": "string",
+          "enum": [
+            "major-auto-merge",
+            "minor-auto-merge",
+            "patch-auto-merge",
+            "manual"
+          ]
+        },
+        "lock-files": {
+          "type": "string",
+          "enum": ["required", "optional", "forbidden"]
+        },
+        "allowed-licenses": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/scalarItem" },
+          "uniqueItems": true
+        },
+        "version-pinning": { "$ref": "#/$defs/versionPinning" }
+      }
+    },
+
+    "deployment": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Deployment configuration. At global level, required fields are enforced via allOf at the call site. At override level, all fields are optional.",
+      "properties": {
+        "tools": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/namedToolExact" }
+        }
+      }
+    },
+
+    "authenticationEnum": {
+      "type": "string",
+      "enum": [
+        "jwt",
+        "oauth2",
+        "oidc",
+        "api-key",
+        "mtls",
+        "hmac",
+        "session",
+        "basic"
+      ]
+    },
+
+    "rateLimitingStrategyEnum": {
+      "type": "string",
+      "enum": ["fixed-window", "sliding-window", "token-bucket", "leaky-bucket"]
+    },
+
+    "rateLimiting": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether rate limiting is required for this API."
+        },
+        "strategy": {
+          "description": "The algorithm to use for rate limiting.",
+          "$ref": "#/$defs/rateLimitingStrategyEnum"
+        },
+        "default-limit": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum number of requests allowed per window."
+        },
+        "default-window-seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Duration of the rate limiting window in seconds."
+        }
+      }
+    },
+
+    "api": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "API configuration. At global level, required fields are enforced via allOf at the call site. At override level, all fields are optional.",
+      "properties": {
+        "style": {
+          "type": "string",
+          "enum": ["rest", "graphql", "grpc", "rpc", "websocket", "sse"]
+        },
+        "versioning": {
+          "type": "string",
+          "enum": ["url-prefix", "header", "query-param", "none"]
+        },
+        "documentation": {
+          "type": "string",
+          "enum": [
+            "openapi-3.1",
+            "openapi-3.0",
+            "graphql-schema",
+            "asyncapi",
+            "raml",
+            "none"
+          ]
+        },
+        "authentication": {
+          "type": "array",
+          "description": "Authentication methods supported by this API. Multiple methods can coexist (e.g. OAuth2 for external clients, mTLS for internal service-to-service). In override context, prefix with '!' to remove a global method.",
+          "items": {
+            "type": "string",
+            "pattern": "^!?(jwt|oauth2|oidc|api-key|mtls|hmac|session|basic)$"
+          },
+          "uniqueItems": true
+        },
+        "rate-limiting": { "$ref": "#/$defs/rateLimiting" }
+      }
+    },
+
+    "backingServiceEntry": {
+      "type": "object",
+      "required": ["id", "type"],
+      "additionalProperties": false,
+      "x-merge-key": "id",
+      "description": "A backing infrastructure service (database, cache, object store, etc.) that a project depends on at runtime. The 'id' field is the merge identity, allowing multiple services of the same type (e.g. two relational-db entries for primary and read-replica).",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "description": "Unique identifier for this backing service entry within its scope (global or project). Used as the merge key. Convention: '{type}-{purpose-slug}', e.g. 'relational-db-primary', 'cache-sessions', 'relational-db-read-replica'."
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "relational-db",
+            "document-db",
+            "key-value-store",
+            "graph-db",
+            "time-series-db",
+            "search-engine",
+            "cache",
+            "object-storage",
+            "cdn",
+            "smtp"
+          ],
+          "description": "Category of the backing service."
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Specific technology or managed service, e.g. 'postgresql', 'mongodb', 'redis', 'elasticsearch', 'minio', 's3', 'cloudfront'."
+        },
+        "version": {
+          "$ref": "#/$defs/versionRange",
+          "description": "Version range of the backing service, where applicable."
+        },
+        "purpose": {
+          "type": "string",
+          "description": "What this backing service is used for in this context, e.g. 'primary data store', 'session cache', 'full-text search index'."
+        }
+      }
+    },
+
+    "infrastructure": {
+      "type": "object",
+      "description": "Backing infrastructure services. Agents use this for IaC generation, docker-compose scaffolding, integration test setup, and architecture diagrams.",
+      "additionalProperties": false,
+      "properties": {
+        "backing-services": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/backingServiceEntry" },
+          "description": "List of infrastructure dependencies. At the global level these represent org-wide defaults or shared services. At the project level, these represent services specific to that project."
+        }
+      }
+    },
+
+    "extensionsBlock": {
+      "type": "object",
+      "description": "Open-ended key/value pairs for custom configuration. Agents should read but not modify these unless explicitly instructed. If x-extensions-schema is provided, validators SHOULD fetch and apply the referenced schema to the remaining properties for additional type safety.",
+      "properties": {
+        "x-extensions-schema": {
+          "type": "string",
+          "description": "Optional URI or repo-relative path to a JSON Schema that validates the other properties in this extensions block (e.g. './schemas/extensions.json' or 'https://internal.company.com/schemas/extensions-v1.json'). When present, validators SHOULD resolve this reference and validate all non-x-extensions-schema properties against it. When absent, all additional properties are accepted without custom validation."
+        }
+      },
+      "additionalProperties": true
+    },
+
+    "technologyStack": {
+      "type": "object",
+      "required": [
+        "language",
+        "version",
+        "runtime",
+        "package-manager",
+        "frameworks"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "language": { "type": "string", "minLength": 1 },
+        "version": { "$ref": "#/$defs/versionRange" },
+        "runtime": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/namedToolRange" }]
+        },
+        "package-manager": { "$ref": "#/$defs/namedToolRange" },
+        "frameworks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/namedToolRange" }
+        }
+      }
+    },
+
+    "technologyStackOverrides": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Partial overrides to the global default-technology-stack. Deep-merged onto the inherited global default: scalar fields (language, version) replace on conflict; runtime and package-manager deep-merge as objects; frameworks uses keyed-array merge on name. Use this when a project shares most of the global stack but differs in specific areas (e.g. adds a framework, changes the version). Mutually exclusive with technology-stack — see x-cross-reference-validation rule 'technology-stack-mutual-exclusion'.",
+      "properties": {
+        "language": { "type": "string", "minLength": 1 },
+        "version": { "$ref": "#/$defs/versionRange" },
+        "runtime": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/namedToolRange" }]
+        },
+        "package-manager": { "$ref": "#/$defs/namedToolRange" },
+        "frameworks": {
+          "type": "array",
+          "description": "Framework overrides. Merged with global frameworks using keyed-array merge on name. To add a framework, include it here. To change a framework's version, include it with the same name and new version.",
+          "items": { "$ref": "#/$defs/namedToolRange" }
+        }
+      }
+    },
+
+    "overrides": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Project-level or environment-level configuration overrides. All fields are optional. Deep-merged with global configuration per x-merge-semantics.",
+      "properties": {
+        "ci-cd": { "$ref": "#/$defs/ciCd" },
+        "testing": { "$ref": "#/$defs/testing" },
+        "code-quality": { "$ref": "#/$defs/codeQuality" },
+        "security": { "$ref": "#/$defs/security" },
+        "observability": { "$ref": "#/$defs/observability" },
+        "service-communication": { "$ref": "#/$defs/serviceCommunication" },
+        "release": { "$ref": "#/$defs/release" },
+        "dependencies": { "$ref": "#/$defs/dependencies" },
+        "deployment": { "$ref": "#/$defs/deployment" },
+        "api": { "$ref": "#/$defs/api" },
+        "infrastructure": { "$ref": "#/$defs/infrastructure" }
+      }
+    },
+
+    "dependencyEntry": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "x-merge-key": "name",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The name of the target project. MUST match the 'name' field of another project in the top-level projects[] array. This constraint is enforced by the reference validator (see x-cross-reference-validation, rule 'dep-name-exists')."
+        },
+        "description": {
+          "type": "string",
+          "description": "Optional explanation of what this dependency provides or why it is needed."
+        }
+      }
+    },
+
+    "project": {
+      "type": "object",
+      "required": [
+        "name",
+        "path",
+        "type",
+        "description",
+        "owner",
+        "version",
+        "lifecycle"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "minLength": 1 },
+        "type": {
+          "type": "string",
+          "enum": [
+            "app",
+            "service",
+            "frontend",
+            "worker",
+            "library",
+            "cli",
+            "gateway",
+            "job"
+          ]
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human- and agent-readable summary of this project's purpose and responsibilities."
+        },
+        "owner": {
+          "$ref": "#/$defs/ownerEntry",
+          "description": "Structured ownership information. See ownerEntry definition for fields."
+        },
+        "version": { "$ref": "#/$defs/versionExact" },
+        "lifecycle": {
+          "type": "string",
+          "enum": [
+            "active",
+            "experimental",
+            "migrating",
+            "deprecated",
+            "archived"
+          ],
+          "description": "Current lifecycle stage of this project. Agents SHOULD warn before adding new dependencies on 'deprecated' or 'archived' projects. Agents SHOULD skip 'archived' projects when scaffolding new integrations. See x-cross-reference-validation rule 'depends-on-non-active-lifecycle'."
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 65535
+        },
+        "depends": {
+          "type": "array",
+          "description": "Build-time or startup-time hard dependencies. These are projects that must be present and available for this project to compile, start, or function. Agents should use this to determine build order, deployment sequencing, and impact analysis for breaking changes. The dependency graph MUST be a DAG (see x-cross-reference-validation, rule 'no-circular-depends').",
+          "items": { "$ref": "#/$defs/dependencyEntry" },
+          "uniqueItems": true
+        },
+        "consumes": {
+          "type": "array",
+          "description": "Runtime service-to-service communication targets. These are projects this service calls at runtime but does not strictly require at build or startup time. The service may degrade gracefully if a consumed service is unavailable. Agents should use this for integration test generation, service mesh configuration, and runtime topology mapping.",
+          "items": { "$ref": "#/$defs/dependencyEntry" },
+          "uniqueItems": true
+        },
+        "technology-stack": {
+          "$ref": "#/$defs/technologyStack",
+          "description": "Project-specific technology stack. If provided, it fully replaces the global default (no merge). Mutually exclusive with technology-stack-overrides — see x-cross-reference-validation rule 'technology-stack-mutual-exclusion'. At least one of global.default-technology-stack or project.technology-stack MUST be present for each project."
+        },
+        "technology-stack-overrides": {
+          "$ref": "#/$defs/technologyStackOverrides",
+          "description": "Partial overrides to the inherited global.default-technology-stack. Deep-merged onto the global default: scalar fields replace, frameworks use keyed-array merge on name. Mutually exclusive with technology-stack. Requires global.default-technology-stack to be present — see x-cross-reference-validation rule 'technology-stack-overrides-requires-global-default'."
+        },
+        "infrastructure": {
+          "$ref": "#/$defs/infrastructure",
+          "description": "Project-specific backing services. Merged with global.infrastructure using keyed-array merge on backing-services[].id."
+        },
+        "overrides": { "$ref": "#/$defs/overrides" },
+        "environment-overrides": {
+          "type": "object",
+          "description": "Per-environment overrides that deep-merge on top of the resolved project config (global + project overrides). Keys MUST match entries in global.environments (see x-cross-reference-validation, rule 'env-override-key-exists'). Merge order: global → project overrides → environment overrides.",
+          "additionalProperties": { "$ref": "#/$defs/overrides" }
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensionsBlock",
+          "description": "Open-ended key/value pairs for project-specific custom configuration, tooling integrations, feature flags, or any settings that do not fit the schema's structured fields. Agents should read but not modify these unless explicitly instructed."
+        },
+        "agent-hints": {
+          "type": "array",
+          "description": "Project-specific natural language guidance for AI agents. Each item is a discrete directive or contextual note that agents should factor into decisions about this project (e.g. 'this service is latency-sensitive', 'prefer horizontal scaling', 'legacy service being migrated to NestJS').",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      }
+    }
+  }
+}

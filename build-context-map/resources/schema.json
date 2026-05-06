@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://anthropic.com/skills/build-context-map/schema.json",
+  "title": "build-context-map .context/ artifact schema",
+  "description": "Schema for context.md and map.md front-matter and structural rules. The validator (scripts/validate.py) enforces these rules in addition to checks that cannot be expressed in JSON Schema (citation resolution, path existence, orphan detection).",
+
+  "definitions": {
+    "isoDate": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+      "description": "ISO date YYYY-MM-DD"
+    },
+    "gitCommit": {
+      "type": "string",
+      "pattern": "^([0-9a-f]{7,40}|none)$",
+      "description": "Git SHA (7-40 hex chars) or 'none' for repos without git"
+    },
+    "originUrl": {
+      "type": "string",
+      "description": "Git remote URL or 'none'",
+      "anyOf": [
+        { "const": "none" },
+        { "format": "uri" },
+        { "pattern": "^git@" }
+      ]
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["HIGH", "MEDIUM", "LOW"]
+    },
+    "reviewDepth": {
+      "type": "string",
+      "enum": ["none", "per_scope", "full"]
+    },
+    "semver": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[A-Za-z0-9.-]+)?$"
+    },
+    "repoOriginEntry": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 1,
+      "additionalProperties": { "$ref": "#/definitions/originUrl" }
+    }
+  },
+
+  "oneOf": [
+    { "$ref": "#/definitions/scopeFrontMatter" },
+    { "$ref": "#/definitions/mapFrontMatter" }
+  ],
+
+  "definitions_continued_": {
+    "_note": "json-schema does not allow definitions to span keys; the two front-matter shapes are inlined below as named definitions."
+  },
+
+  "$defs": {
+    "scopeFrontMatter": {
+      "type": "object",
+      "description": "Front-matter for any context.md describing a single scope (repo or subsystem).",
+      "required": [
+        "file",
+        "scope",
+        "created",
+        "updated",
+        "commit",
+        "origin",
+        "analyzer_version",
+        "review_depth",
+        "confidence"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "file":             { "type": "string", "pattern": "^\\.context/" },
+        "scope":            { "type": "string", "minLength": 1 },
+        "created":          { "$ref": "#/definitions/isoDate" },
+        "updated":          { "$ref": "#/definitions/isoDate" },
+        "commit":           { "$ref": "#/definitions/gitCommit" },
+        "origin":           { "$ref": "#/definitions/originUrl" },
+        "analyzer_version": { "$ref": "#/definitions/semver" },
+        "review_depth":     { "$ref": "#/definitions/reviewDepth" },
+        "confidence":       { "$ref": "#/definitions/confidence" }
+      }
+    },
+
+    "mapFrontMatter": {
+      "type": "object",
+      "description": "Front-matter for .context/map.md (uses 'origins' sequence instead of 'origin').",
+      "required": [
+        "file",
+        "scope",
+        "created",
+        "updated",
+        "commit",
+        "origins",
+        "analyzer_version",
+        "review_depth",
+        "confidence"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "file":             { "type": "string", "const": ".context/map.md" },
+        "scope":            { "type": "string", "minLength": 1 },
+        "created":          { "$ref": "#/definitions/isoDate" },
+        "updated":          { "$ref": "#/definitions/isoDate" },
+        "commit":           { "$ref": "#/definitions/gitCommit" },
+        "origins": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/repoOriginEntry" }
+        },
+        "analyzer_version": { "$ref": "#/definitions/semver" },
+        "review_depth":     { "$ref": "#/definitions/reviewDepth" },
+        "confidence":       { "$ref": "#/definitions/confidence" }
+      }
+    }
+  },
+
+  "structuralRules": {
+    "_note": "Not enforced by JSON Schema; enforced by scripts/validate.py.",
+    "rules": [
+      "Every context.md MUST have YAML front-matter delimited by '---' on the first line and a closing '---' before any other content.",
+      "Every map.md MUST use the mapFrontMatter shape; every other context.md MUST use the scopeFrontMatter shape.",
+      "Every section confidence comment '<!-- confidence: X -->' MUST appear on the line immediately after a heading.",
+      "Section confidence MUST be one of HIGH, MEDIUM, LOW.",
+      "Every HIGH-confidence claim MUST cite at least one `path:LINE` or `path:LINE-LINE` reference inside the same section.",
+      "Every cited `path:LINE` MUST resolve: the file MUST exist relative to the scope path, and the line/range MUST be within the file's line count.",
+      "Every file path mentioned in an artifact (in code-formatted spans) MUST exist relative to the scope, OR be marked as historical (e.g., '(removed in commit X)').",
+      "Every .context/$REPO/$SUBSYSTEM/context.md MUST be referenced by name in its parent .context/$REPO/context.md subsystem index.",
+      "Every .context/$REPO/context.md MUST be referenced by name in .context/map.md repo index.",
+      "There MUST be no .md files under .context/ (excluding .scratch/ and .handoff/) that are not reachable from map.md by following the index references.",
+      "The 'updated' date MUST be greater than or equal to the 'created' date.",
+      "The 'commit' field MUST match a real commit in the scope's repo, OR be 'none' when origin is 'none'."
+    ]
+  }
+}

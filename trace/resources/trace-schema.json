@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://anthropic.com/skills/trace/trace-schema.json",
+  "title": "trace skill output schema",
+  "description": "Schema for a saved trace artifact (.context/traces/*.md). Defines front-matter fields and structural rules. The structural rules below are enforced by scripts/validate-trace.py; JSON Schema covers only the front-matter shape.",
+
+  "$defs": {
+    "isoDate":   { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+    "gitCommit": { "type": "string", "pattern": "^([0-9a-f]{7,40}|none)$" },
+    "confidence": { "type": "string", "enum": ["HIGH", "MEDIUM", "LOW"] },
+    "inputType": { "type": "string", "enum": ["question", "bug", "feature", "refactor"] },
+    "verdict":   { "type": "string", "enum": ["PASS", "REVISE", "REVISED", "DISAGREEMENT_SURFACED"] },
+    "stalenessOutcome": { "type": "string", "enum": ["fresh", "warned", "refreshed"] },
+    "fileConsulted": {
+      "type": "object",
+      "required": ["path", "kind"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "enum": ["context", "source", "trace"] },
+        "ranges": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[0-9]+(-[0-9]+)?$" }
+        }
+      }
+    }
+  },
+
+  "type": "object",
+  "required": [
+    "file",
+    "trace_input",
+    "input_type",
+    "created",
+    "trace_skill_version",
+    "context_commit_alignment",
+    "files_consulted",
+    "overall_confidence",
+    "validator_verdict"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "file":                    { "type": "string", "pattern": "^\\.context/traces/" },
+    "trace_input":             { "type": "string", "minLength": 1 },
+    "input_type":              { "$ref": "#/$defs/inputType" },
+    "created":                 { "$ref": "#/$defs/isoDate" },
+    "trace_skill_version":     { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[A-Za-z0-9.-]+)?$" },
+    "context_commit_alignment": {
+      "type": "object",
+      "description": "Per-repo: the commit recorded in .context/$REPO/context.md AND the actual repo HEAD at trace time. If they differ, staleness was detected.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["context_commit", "head_commit", "staleness"],
+        "additionalProperties": false,
+        "properties": {
+          "context_commit": { "$ref": "#/$defs/gitCommit" },
+          "head_commit":    { "$ref": "#/$defs/gitCommit" },
+          "staleness":      { "$ref": "#/$defs/stalenessOutcome" }
+        }
+      }
+    },
+    "files_consulted": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/fileConsulted" },
+      "minItems": 1
+    },
+    "overall_confidence":      { "$ref": "#/$defs/confidence" },
+    "validator_verdict":       { "$ref": "#/$defs/verdict" },
+    "prior_trace_consulted":   { "type": "string", "description": "Path to a prior trace if this trace built on one" },
+    "depends_on":              {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Paths of prior traces this one extends or refines"
+    }
+  },
+
+  "structuralRules": {
+    "_note": "Not enforced by JSON Schema; enforced by scripts/validate-trace.py.",
+    "rules": [
+      "Every trace MUST have YAML front-matter delimited by '---' on the first line.",
+      "Every trace MUST begin (after front-matter) with the preamble line: '**Trace:** <input> · <type> · via <files>'.",
+      "Every section heading MUST be followed by a '<!-- confidence: HIGH|MEDIUM|LOW -->' annotation on the next non-blank line, EXCEPT the H1 title and H3+ subsections (which inherit their parent H2 section's confidence).",
+      "Every HIGH-confidence section MUST contain at least one `path:LINE` or `path:LINE-LINE` citation.",
+      "Every cited `path:LINE` MUST resolve in the repo at the recorded `head_commit`.",
+      "An overall confidence summary MUST appear at the end: 'Overall: <CONF> (<N> HIGH, <M> MEDIUM, <K> LOW)'.",
+      "Required sections by input_type:",
+      "  question: How [X] Works, Entry Point, Flow, (optional: Key Data Shapes, Non-Obvious Behavior, Where to Look Next)",
+      "  bug: Diagnosis, Root Cause, Fix Design, Side Effects & Risks, Verification",
+      "  feature: Design Summary, Insertion Points, Interface Contracts, (optional: Schema Changes), Implementation Sequence, Risks & Open Questions",
+      "  refactor: Current State, Target State, Migration Plan, (optional: Interface Changes), Risk Assessment",
+      "If the trace was produced under staleness warnings, a 'Staleness Notes' section MUST appear before 'Overall' summary."
+    ]
+  }
+}

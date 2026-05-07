@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://anthropic.com/skills/refine/refine-schema.json",
+  "title": "refine skill output schema",
+  "description": "Schema for a saved refined-input artifact (.context/refinements/*.md). Defines front-matter fields and structural rules. Structural rules below are enforced by scripts/validate-refine.py; JSON Schema covers only the front-matter shape.",
+
+  "$defs": {
+    "isoDate":    { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+    "gitCommit":  { "type": "string", "pattern": "^([0-9a-f]{7,40}|none)$" },
+    "semver":     { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[A-Za-z0-9.-]+)?$" },
+    "inputType":  { "type": "string", "enum": ["question", "bug", "feature", "refactor"] },
+    "verdict":    { "type": "string", "enum": ["PASS", "REVISE", "REVISED"] },
+    "clarification": {
+      "type": "object",
+      "required": ["dimension", "question", "answer"],
+      "additionalProperties": false,
+      "properties": {
+        "dimension": { "type": "string", "minLength": 1 },
+        "question":  { "type": "string", "minLength": 1 },
+        "answer":    { "type": "string", "minLength": 1 }
+      }
+    },
+    "assumedDimension": {
+      "type": "object",
+      "required": ["dimension", "assumed_value"],
+      "additionalProperties": false,
+      "properties": {
+        "dimension":      { "type": "string", "minLength": 1 },
+        "assumed_value":  { "type": "string", "minLength": 1 }
+      }
+    },
+    "contextCommitEntry": {
+      "type": "object",
+      "required": ["context_commit", "head_commit"],
+      "additionalProperties": false,
+      "properties": {
+        "context_commit": { "$ref": "#/$defs/gitCommit" },
+        "head_commit":    { "$ref": "#/$defs/gitCommit" }
+      }
+    }
+  },
+
+  "type": "object",
+  "required": [
+    "file",
+    "original_input",
+    "refined_input",
+    "input_type",
+    "created",
+    "refine_skill_version",
+    "dimensions_addressed",
+    "dimensions_assumed",
+    "clarifications",
+    "validator_verdict"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "file": {
+      "type": "string",
+      "pattern": "^\\.context/refinements/",
+      "description": "Path under .context/refinements/ where this artifact is saved. Present even for terminal-only runs, as a logical identifier."
+    },
+    "original_input": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Verbatim user text before any clarification."
+    },
+    "refined_input": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The assembled refined input, ready to hand to /trace."
+    },
+    "input_type": {
+      "$ref": "#/$defs/inputType"
+    },
+    "created": {
+      "$ref": "#/$defs/isoDate"
+    },
+    "refine_skill_version": {
+      "$ref": "#/$defs/semver"
+    },
+    "dimensions_addressed": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Names of dimensions that were explicitly answered during the challenge loop."
+    },
+    "dimensions_assumed": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/assumedDimension" },
+      "description": "Dimensions where the value was inferred rather than asked. Each entry records the dimension name and the value assumed."
+    },
+    "clarifications": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/clarification" },
+      "description": "The Q&A pairs from the challenge loop, in order."
+    },
+    "validator_verdict": {
+      "$ref": "#/$defs/verdict"
+    },
+    "context_commit": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/contextCommitEntry" },
+      "description": "Per-repo: the HEAD commit at refinement time, and the commit recorded in the relevant .context/ artifact. Present only when .context/ was available."
+    },
+    "hard_stop": {
+      "type": "boolean",
+      "description": "True if /refine terminated with a hard-stop rather than a resolved refinement. When true, refined_input will be empty and the body contains the hard-stop diagnosis."
+    }
+  },
+
+  "structuralRules": {
+    "_note": "Not enforced by JSON Schema; enforced by scripts/validate-refine.py.",
+    "rules": [
+      "Every artifact MUST have YAML front-matter delimited by '---' on the first line.",
+      "Every artifact MUST begin (after front-matter) with the preamble line: '**Refined input:** <summary> · <input_type> · <N> dimensions addressed, <M> assumed'.",
+      "A '## Original Input' section MUST be present, containing the verbatim original input.",
+      "A '## Refined Input' section MUST be present. If hard_stop is true, this section contains the hard-stop diagnosis instead of a refined input.",
+      "A '## Assumptions' section MUST be present if dimensions_assumed is non-empty.",
+      "A '## Clarification Log' section MUST be present if clarifications is non-empty.",
+      "If hard_stop is true, a '## How to Rephrase' section MUST be present with concrete guidance.",
+      "refined_input in front-matter MUST differ structurally from original_input UNLESS the artifact is a round-trip pass (in which case a '## Round-Trip' section noting this MUST be present).",
+      "Every dimension name in dimensions_addressed MUST appear in the canonical dimension list for the input_type.",
+      "Every dimension name in dimensions_assumed MUST appear in the canonical dimension list for the input_type."
+    ]
+  },
+
+  "canonicalDimensions": {
+    "_note": "Enforced by validate-refine.py for dimensions_addressed and dimensions_assumed.",
+    "question": [
+      "scope_boundary",
+      "audience_depth",
+      "specific_subsystem"
+    ],
+    "bug": [
+      "symptom_and_fixed_definition",
+      "reproducer",
+      "when_it_started",
+      "frequency_and_conditions",
+      "whats_already_been_tried"
+    ],
+    "feature": [
+      "scope_boundary",
+      "existing_pattern_preference",
+      "migration_vs_greenfield",
+      "cross_repo_scope",
+      "performance_scale_targets",
+      "user_visible_behavior"
+    ],
+    "refactor": [
+      "tolerance_for_breaking_changes",
+      "increment_size",
+      "behavior_preservation",
+      "trigger",
+      "test_coverage_assumption",
+      "out_of_scope"
+    ]
+  }
+}
